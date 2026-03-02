@@ -213,6 +213,42 @@ fn create_tinfoil_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, L
 
 const VENICEAI_BASE_URL: &str = "https://api.venice.ai/api/v1";
 
+/// Build the `venice_parameters` object for the Venice.ai API.
+///
+/// Venice.ai accepts a `venice_parameters` top-level key in the Chat Completions
+/// request body to enable provider-specific features:
+/// - `enable_web_search`: "on" | "off" | "auto" — grounded web search
+/// - `enable_web_citations`: bool — fetch and summarise URLs referenced in the prompt
+///
+/// Returns `None` when both features are disabled (avoids sending an empty object).
+fn build_veniceai_params(
+    web_search: Option<&str>,
+    web_scraping: bool,
+) -> Option<serde_json::Value> {
+    let mut inner = serde_json::Map::new();
+
+    // Only set enable_web_search when explicitly configured; Venice.ai defaults to "off".
+    if let Some(mode) = web_search {
+        inner.insert(
+            "enable_web_search".to_string(),
+            serde_json::Value::String(mode.to_string()),
+        );
+    }
+
+    if web_scraping {
+        inner.insert(
+            "enable_web_citations".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
+
+    if inner.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({ "venice_parameters": inner }))
+    }
+}
+
 fn create_veniceai_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
     let venice = config
         .veniceai
@@ -239,12 +275,25 @@ fn create_veniceai_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, 
         .completions_api();
 
     let model = client.completion_model(&venice.model);
+
+    // Build Venice.ai-specific parameters. These are passed as a top-level
+    // `venice_parameters` object in the request body (see Venice.ai API docs).
+    let venice_params = build_veniceai_params(venice.web_search.as_deref(), venice.web_scraping);
+
     tracing::info!(
-        "Using Venice.ai (model: {}, base_url: {})",
-        venice.model,
-        base_url
+        model = %venice.model,
+        base_url = %base_url,
+        web_search = ?venice.web_search,
+        web_scraping = venice.web_scraping,
+        "Using Venice.ai",
     );
-    Ok(Arc::new(RigAdapter::new(model, &venice.model)))
+
+    let adapter = if let Some(params) = venice_params {
+        RigAdapter::new(model, &venice.model).with_additional_params(params)
+    } else {
+        RigAdapter::new(model, &venice.model)
+    };
+    Ok(Arc::new(adapter))
 }
 
 fn create_openai_compatible_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {

@@ -34,6 +34,12 @@ pub struct RigAdapter<M: CompletionModel> {
     model_name: String,
     input_cost: Decimal,
     output_cost: Decimal,
+    /// Provider-specific parameters merged into every request body.
+    ///
+    /// Use `with_additional_params()` to set these at construction time.
+    /// The value is serialized and merged into the top-level JSON request object
+    /// by rig-core, so it must be a JSON object (not an array or scalar).
+    additional_params: Option<serde_json::Value>,
 }
 
 impl<M: CompletionModel> RigAdapter<M> {
@@ -47,7 +53,19 @@ impl<M: CompletionModel> RigAdapter<M> {
             model_name: name,
             input_cost,
             output_cost,
+            additional_params: None,
         }
+    }
+
+    /// Attach provider-specific parameters that are merged into every request body.
+    ///
+    /// The `params` value must be a JSON object. For example, Venice.ai uses:
+    /// ```json
+    /// { "venice_parameters": { "enable_web_search": "auto" } }
+    /// ```
+    pub fn with_additional_params(mut self, params: serde_json::Value) -> Self {
+        self.additional_params = Some(params);
+        self
     }
 }
 
@@ -368,6 +386,7 @@ fn build_rig_request(
     tool_choice: Option<RigToolChoice>,
     temperature: Option<f32>,
     max_tokens: Option<u32>,
+    additional_params: Option<serde_json::Value>,
 ) -> Result<RigRequest, LlmError> {
     // rig-core requires at least one message in chat_history
     if history.is_empty() {
@@ -387,7 +406,7 @@ fn build_rig_request(
         temperature: temperature.map(|t| t as f64),
         max_tokens: max_tokens.map(|t| t as u64),
         tool_choice,
-        additional_params: None,
+        additional_params,
     })
 }
 
@@ -427,6 +446,7 @@ where
             None,
             request.temperature,
             request.max_tokens,
+            self.additional_params.clone(),
         )?;
 
         let response =
@@ -478,6 +498,7 @@ where
             tool_choice,
             request.temperature,
             request.max_tokens,
+            self.additional_params.clone(),
         )?;
 
         let response =
