@@ -43,7 +43,7 @@ impl std::str::FromStr for LlmBackend {
             "tinfoil" => Ok(Self::Tinfoil),
             "venice" | "venice_ai" | "veniceai" => Ok(Self::VeniceAi),
             _ => Err(format!(
-                "invalid LLM backend '{}', expected one of: nearai, openai, anthropic, ollama, openai_compatible, tinfoil",
+                "invalid LLM backend '{}', expected one of: nearai, openai, anthropic, ollama, openai_compatible, tinfoil, veniceai",
                 s
             )),
         }
@@ -378,7 +378,7 @@ impl LlmConfig {
                     hint: "Set VENICE_API_KEY when LLM_BACKEND=veniceai".to_string(),
                 })?;
             let model =
-                optional_env("VENICE_MODEL")?.unwrap_or_else(|| "llama-3.3-70b".to_string());
+                optional_env("VENICE_MODEL")?.unwrap_or_else(|| "zai-org-glm-5".to_string());
             let base_url = optional_env("VENICE_BASE_URL")?;
             let web_search = optional_env("VENICE_WEB_SEARCH")?;
             let web_scraping = parse_optional_env("VENICE_WEB_SCRAPING", false)?;
