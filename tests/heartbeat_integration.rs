@@ -1,4 +1,4 @@
-#![cfg(all(feature = "postgres", feature = "integration"))]
+#![cfg(feature = "postgres")]
 //! Heartbeat integration test.
 //!
 //! Exercises the heartbeat system in isolation: connects to the real
