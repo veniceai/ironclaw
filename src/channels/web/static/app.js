@@ -358,29 +358,11 @@ function connectSSE() {
   });
 
   eventSource.addEventListener('auth_required', (e) => {
-    const data = JSON.parse(e.data);
-    if (data.auth_url) {
-      // OAuth flow: show the auth card with an OAuth button + optional token paste field.
-      showAuthCard(data);
-    } else {
-      // Setup flow: fetch the extension's credential schema and show the multi-field
-      // configure modal (the same UI used by the Extensions tab "Setup" button).
-      showConfigureModal(data.extension_name);
-    }
+    handleAuthRequired(JSON.parse(e.data));
   });
 
   eventSource.addEventListener('auth_completed', (e) => {
-    const data = JSON.parse(e.data);
-    // Dismiss whichever UI path was active: auth card (OAuth) or configure modal (setup).
-    removeAuthCard(data.extension_name);
-    closeConfigureModal();
-    showToast(data.message, data.success ? 'success' : 'error');
-    if (shouldShowChannelConnectedMessage(data.extension_name, data.success)) {
-      addMessage('system', 'Telegram is now connected. You can message me there and I can send you notifications.');
-    }
-    // Refresh extensions list so status indicators update
-    if (currentTab === 'extensions') loadExtensions();
-    enableChatInput();
+    handleAuthCompleted(JSON.parse(e.data));
   });
 
   eventSource.addEventListener('extension_status', (e) => {
@@ -1139,13 +1121,71 @@ function showJobCard(data) {
 
 // --- Auth card ---
 
-function showAuthCard(data) {
-  // Remove any existing card for this extension first
-  removeAuthCard(data.extension_name);
+function handleAuthRequired(data) {
+  if (data.auth_url) {
+    // OAuth flow: show the global auth prompt with an OAuth button + optional token paste field.
+    showAuthCard(data);
+  } else {
+    // Setup flow: fetch the extension's credential schema and show the multi-field
+    // configure modal (the same UI used by the Extensions tab "Setup" button).
+    showConfigureModal(data.extension_name);
+  }
+}
 
-  const container = document.getElementById('chat-messages');
+function handleAuthCompleted(data) {
+  // Dismiss only the matching extension's UI so unrelated setup work is not interrupted.
+  removeAuthCard(data.extension_name);
+  closeConfigureModal(data.extension_name);
+  showToast(data.message, data.success ? 'success' : 'error');
+  if (shouldShowChannelConnectedMessage(data.extension_name, data.success)) {
+    addMessage('system', 'Telegram is now connected. You can message me there and I can send you notifications.');
+  }
+  if (currentTab === 'extensions') loadExtensions();
+  enableChatInput();
+}
+
+function queryByDataAttribute(selector, attributeName, attributeValue) {
+  if (typeof attributeValue !== 'string') return document.querySelector(selector);
+
+  if (window.CSS && typeof window.CSS.escape === 'function') {
+    return document.querySelector(
+      selector + '[' + attributeName + '="' + window.CSS.escape(attributeValue) + '"]'
+    );
+  }
+
+  const candidates = document.querySelectorAll(selector);
+  for (const candidate of candidates) {
+    if (candidate.getAttribute(attributeName) === attributeValue) return candidate;
+  }
+  return null;
+}
+
+function getAuthOverlay(extensionName) {
+  return queryByDataAttribute('.auth-overlay', 'data-extension-name', extensionName);
+}
+
+function getAuthCard(extensionName) {
+  return queryByDataAttribute('.auth-card', 'data-extension-name', extensionName);
+}
+
+function getConfigureOverlay(extensionName) {
+  return queryByDataAttribute('.configure-overlay', 'data-extension-name', extensionName);
+}
+
+function showAuthCard(data) {
+  // Keep a single global auth prompt so the experience is consistent across tabs.
+  const existing = getAuthOverlay();
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'auth-overlay';
+  overlay.setAttribute('data-extension-name', data.extension_name);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) cancelAuth(data.extension_name);
+  });
+
   const card = document.createElement('div');
-  card.className = 'auth-card';
+  card.className = 'auth-card auth-modal';
   card.setAttribute('data-extension-name', data.extension_name);
 
   const header = document.createElement('div');
@@ -1224,21 +1264,30 @@ function showAuthCard(data) {
   actions.appendChild(cancelBtn);
   card.appendChild(actions);
 
-  container.appendChild(card);
-  container.scrollTop = container.scrollHeight;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
   tokenInput.focus();
 }
 
 function removeAuthCard(extensionName) {
-  const card = document.querySelector('.auth-card[data-extension-name="' + extensionName + '"]');
-  if (card) card.remove();
+  const overlay = getAuthOverlay(extensionName);
+  if (overlay) {
+    overlay.remove();
+    return;
+  }
+  const card = getAuthCard(extensionName);
+  if (card) {
+    const parentOverlay = card.closest('.auth-overlay');
+    if (parentOverlay) parentOverlay.remove();
+    else card.remove();
+  }
 }
 
 function submitAuthToken(extensionName, tokenValue) {
   if (!tokenValue || !tokenValue.trim()) return;
 
   // Disable submit button while in flight
-  const card = document.querySelector('.auth-card[data-extension-name="' + extensionName + '"]');
+  const card = getAuthCard(extensionName);
   if (card) {
     const btns = card.querySelectorAll('button');
     btns.forEach((b) => { b.disabled = true; });
@@ -1249,8 +1298,10 @@ function submitAuthToken(extensionName, tokenValue) {
     body: { extension_name: extensionName, token: tokenValue.trim() },
   }).then((result) => {
     if (result.success) {
+      // Close immediately for responsiveness; the authoritative success UX
+      // (toast + extensions refresh) still comes from auth_completed SSE.
       removeAuthCard(extensionName);
-      addMessage('system', result.message);
+      enableChatInput();
     } else {
       showAuthCardError(extensionName, result.message);
     }
@@ -1269,7 +1320,7 @@ function cancelAuth(extensionName) {
 }
 
 function showAuthCardError(extensionName, message) {
-  const card = document.querySelector('.auth-card[data-extension-name="' + extensionName + '"]');
+  const card = getAuthCard(extensionName);
   if (!card) return;
   // Re-enable buttons
   const btns = card.querySelectorAll('button');
@@ -2199,6 +2250,10 @@ function renderAvailableExtensionCard(entry) {
         showToast(I18n.t('extensions.installedSuccess', {name: entry.display_name}), 'success');
         // OAuth popup if auth started during install (builtin creds)
         if (res.auth_url) {
+          showAuthCard({
+            extension_name: entry.name,
+            auth_url: res.auth_url,
+          });
           showToast('Opening authentication for ' + entry.display_name, 'info');
           openOAuthUrl(res.auth_url);
         }
@@ -2464,6 +2519,10 @@ function activateExtension(name) {
       if (res.success) {
         // Even on success, the tool may need OAuth (e.g., WASM loaded but no token yet)
         if (res.auth_url) {
+          showAuthCard({
+            extension_name: name,
+            auth_url: res.auth_url,
+          });
           showToast('Opening authentication for ' + name, 'info');
           openOAuthUrl(res.auth_url);
         }
@@ -2472,6 +2531,10 @@ function activateExtension(name) {
       }
 
       if (res.auth_url) {
+        showAuthCard({
+          extension_name: name,
+          auth_url: res.auth_url,
+        });
         showToast('Opening authentication for ' + name, 'info');
         openOAuthUrl(res.auth_url);
       } else if (res.awaiting_token) {
@@ -2514,6 +2577,7 @@ function renderConfigureModal(name, secrets) {
   closeConfigureModal();
   const overlay = document.createElement('div');
   overlay.className = 'configure-overlay';
+  overlay.setAttribute('data-extension-name', name);
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) closeConfigureModal();
   });
@@ -2607,7 +2671,8 @@ function submitConfigureModal(name, fields) {
   }
 
   // Disable buttons to prevent double-submit
-  var btns = document.querySelectorAll('.configure-actions button');
+  const overlay = getConfigureOverlay(name) || document.querySelector('.configure-overlay');
+  var btns = overlay ? overlay.querySelectorAll('.configure-actions button') : [];
   btns.forEach(function(b) { b.disabled = true; });
 
   apiFetch('/api/extensions/' + encodeURIComponent(name) + '/setup', {
@@ -2618,8 +2683,10 @@ function submitConfigureModal(name, fields) {
       if (res.success) {
         closeConfigureModal();
         if (res.auth_url) {
-          // OAuth flow started — open consent popup. The auth_completed SSE will
-          // not arrive immediately (it fires after OAuth callback), so show a toast now.
+          showAuthCard({
+            extension_name: name,
+            auth_url: res.auth_url,
+          });
           showToast('Opening OAuth authorization for ' + name, 'info');
           openOAuthUrl(res.auth_url);
           loadExtensions();
@@ -2638,8 +2705,9 @@ function submitConfigureModal(name, fields) {
     });
 }
 
-function closeConfigureModal() {
-  const existing = document.querySelector('.configure-overlay');
+function closeConfigureModal(extensionName) {
+  if (typeof extensionName !== 'string') extensionName = null;
+  const existing = getConfigureOverlay(extensionName);
   if (existing) existing.remove();
 }
 
